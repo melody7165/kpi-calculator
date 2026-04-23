@@ -100,16 +100,14 @@ else:
                 name = ws_temp.cell(row=NAME_ROW, column=c).value
                 if name: employees[str(name).strip()] = c
             
-            # 2. 抓取項目、佔比 (嚴格標示 row 與 column 避免版本錯誤)
+            # 2. 抓取項目、佔比
             item_info = {}
             for r in ROWS_1_TO_4 + ROWS_5_TO_6:
                 cat = str(ws_temp.cell(row=r, column=1).value or "").strip()
                 desc = str(ws_temp.cell(row=r, column=2).value or "").strip()
                 weight_raw = ws_temp.cell(row=r, column=WEIGHT_COL).value
                 
-                # 防呆：如果沒有抓到分類名稱，只顯示描述
                 label_text = f"{cat} {desc}".strip() if cat else desc
-                
                 item_info[r] = {
                     "label": label_text if label_text else f"未命名項目 (第 {r} 列)", 
                     "weight_str": format_to_percentage_string(weight_raw)
@@ -129,18 +127,20 @@ else:
                     st.info("💡 **貼心提示：** 請直接輸入百分比數字。例如想給 8.5% 分，請直接在格子輸入 **8.5** 即可。")
                     
                     with st.form(f"form_{l_name}_{e_name}"):
+                        # 讀取該名員工是否已有暫存成績
                         curr_scores = st.session_state.all_scores.get(l_name, {}).get(e_name, {})
                         new_data = {}
                         
                         st.subheader("1-4 項評量指標 (將採平均計算)")
                         for r in ROWS_1_TO_4:
-                            # 加上 .get() 容錯機制，保證絕對不報 KeyError
                             info = item_info.get(r, {"label": f"項目載入失敗 (第 {r} 列)", "weight_str": "0%"})
                             st.write(f"📌 {info['label']}")
                             st.markdown(f"<p style='color:#007BFF; margin-bottom:5px;'>🎯 分數佔比上限：<b>{info['weight_str']}</b></p>", unsafe_allow_html=True)
                             
                             display_val = float(curr_scores.get(r, 0.0)) * 100 
-                            input_pct = st.number_input("輸入評分 (%)", value=display_val, format="%.2f", step=0.5, key=f"r_{r}")
+                            
+                            # 【修正重點】：在 key 裡面加入 e_name (員工名字)，確保切換人員時格子會刷新
+                            input_pct = st.number_input("輸入評分 (%)", value=display_val, format="%.2f", step=0.5, key=f"score_{r}_{e_name}")
                             
                             new_data[r] = input_pct / 100.0
                         
@@ -151,12 +151,15 @@ else:
                             st.markdown(f"<p style='color:#DC3545; margin-bottom:5px;'>🎯 加減分標準：<b>{info['weight_str']}</b></p>", unsafe_allow_html=True)
                             
                             display_val = float(curr_scores.get(r, 0.0)) * 100
-                            input_pct = st.number_input("輸入分數 (%)", value=display_val, format="%.2f", step=0.5, key=f"r_{r}")
+                            
+                            # 【修正重點】：在 key 裡面加入 e_name (員工名字)
+                            input_pct = st.number_input("輸入分數 (%)", value=display_val, format="%.2f", step=0.5, key=f"score_{r}_{e_name}")
                             
                             new_data[r] = input_pct / 100.0
                             
                         st.subheader("加扣分事蹟說明")
-                        new_data[ROW_TEXT] = st.text_area("請詳細填寫事蹟內容", value=curr_scores.get(ROW_TEXT, ""), height=100)
+                        # 【修正重點】：文字框也要加入員工名字的 key
+                        new_data[ROW_TEXT] = st.text_area("請詳細填寫事蹟內容", value=curr_scores.get(ROW_TEXT, ""), height=100, key=f"txt_{e_name}")
                         
                         if st.form_submit_button("💾 儲存這份評分"):
                             if l_name not in st.session_state.all_scores: st.session_state.all_scores[l_name] = {}
