@@ -24,19 +24,16 @@ def safe_float(val):
         return 0.0
 
 def format_to_percentage_string(val):
-    """將 Excel 中的小數佔比轉為百分比字串 (例如 0.3 轉為 30%)"""
     try:
         if val is None or str(val).strip() == "": return "0%"
         f_val = float(val)
         return f"{f_val * 100:g}%"
     except ValueError:
-        return str(val).strip() # 如果是 +X% 這類的文字，就直接保留
+        return str(val).strip()
 
-# 初始化 Session State (儲存組長評分，以小數點格式儲存)
 if "all_scores" not in st.session_state:
     st.session_state.all_scores = {}
 
-# 側邊欄：模式切換
 st.sidebar.title("📊 系統模式")
 mode = st.sidebar.radio("切換功能：", ["模式 A：上傳 Excel 合併", "模式 B：網頁直接評分"])
 
@@ -52,34 +49,55 @@ if mode == "模式 A：上傳 Excel 合併":
     if f1 and f2:
         if st.button("執行合併計算"):
             try:
-                wb1 = openpyxl.load_workbook(f1) # 模板
-                wb2 = openpyxl.load_workbook(f2, data_only=True)
-                ws1, ws2 = wb1.active, wb2.active
+                # 讀取純數值來做計算，避免被公式干擾
+                wb1_data = openpyxl.load_workbook(f1, data_only=True)
+                wb2_data = openpyxl.load_workbook(f2, data_only=True)
+                ws1_data = wb1_data.active
+                ws2_data = wb2_data.active
                 
-                emp_cols = [c for c in range(START_EMP_COL, ws1.max_column + 1) if ws1.cell(row=NAME_ROW, column=c).value]
+                # 讀取模板用來覆寫並輸出 (保留格式)
+                wb_out = openpyxl.load_workbook(f1) 
+                ws_out = wb_out.active
+                
+                emp_cols = [c for c in range(START_EMP_COL, ws1_data.max_column + 1) if ws1_data.cell(row=NAME_ROW, column=c).value]
                 
                 for c in emp_cols:
-                    score_sum_1 = sum(abs(safe_float(ws1.cell(row=r, column=c).value)) for r in ROWS_1_TO_4 + ROWS_5_TO_6)
-                    score_sum_2 = sum(abs(safe_float(ws2.cell(row=r, column=c).value)) for r in ROWS_1_TO_4 + ROWS_5_TO_6)
+                    # 【嚴格判定】：只加總 1~6 項的分數絕對值，> 0.0001 才算有評分
+                    sum1 = sum(abs(safe_float(ws1_data.cell(row=r, column=c).value)) for r in ROWS_1_TO_4 + ROWS_5_TO_6)
+                    sum2 = sum(abs(safe_float(ws2_data.cell(row=r, column=c).value)) for r in ROWS_1_TO_4 + ROWS_5_TO_6)
                     
+                    # 1~4項 平均邏輯
                     for r in ROWS_1_TO_4:
-                        v1, v2 = safe_float(ws1.cell(row=r, column=c).value), safe_float(ws2.cell(row=r, column=c).value)
-                        if score_sum_1 > 0 and score_sum_2 > 0: ws1.cell(row=r, column=c).value = (v1 + v2) / 2
-                        elif score_sum_2 > 0: ws1.cell(row=r, column=c).value = v2 
+                        v1 = safe_float(ws1_data.cell(row=r, column=c).value)
+                        v2 = safe_float(ws2_data.cell(row=r, column=c).value)
+                        
+                        if sum1 > 1e-4 and sum2 > 1e-4:
+                            ws_out.cell(row=r, column=c).value = (v1 + v2) / 2.0
+                        elif sum2 > 1e-4:
+                            ws_out.cell(row=r, column=c).value = v2 
+                        elif sum1 > 1e-4:
+                            ws_out.cell(row=r, column=c).value = v1
+                        else:
+                            ws_out.cell(row=r, column=c).value = 0.0
                     
+                    # 5~6項 累加邏輯
                     for r in ROWS_5_TO_6:
-                        ws1.cell(row=r, column=c).value = safe_float(ws1.cell(row=r, column=c).value) + safe_float(ws2.cell(row=r, column=c).value)
+                        v1 = safe_float(ws1_data.cell(row=r, column=c).value) if sum1 > 1e-4 else 0.0
+                        v2 = safe_float(ws2_data.cell(row=r, column=c).value) if sum2 > 1e-4 else 0.0
+                        ws_out.cell(row=r, column=c).value = v1 + v2
                     
-                    t1 = str(ws1.cell(row=ROW_TEXT, column=c).value or "").strip()
-                    t2 = str(ws2.cell(row=ROW_TEXT, column=c).value or "").strip()
-                    if t1 and t2: ws1.cell(row=ROW_TEXT, column=c).value = f"【組長A】:\n{t1}\n\n【組長B】:\n{t2}"
-                    elif t2: ws1.cell(row=ROW_TEXT, column=c).value = t2
+                    # 文字合併 (不受是否打分限制)
+                    t1 = str(ws1_data.cell(row=ROW_TEXT, column=c).value or "").strip()
+                    t2 = str(ws2_data.cell(row=ROW_TEXT, column=c).value or "").strip()
+                    if t1 and t2: ws_out.cell(row=ROW_TEXT, column=c).value = f"【組長A】:\n{t1}\n\n【組長B】:\n{t2}"
+                    elif t2: ws_out.cell(row=ROW_TEXT, column=c).value = t2
+                    elif t1: ws_out.cell(row=ROW_TEXT, column=c).value = t1
 
-                out = BytesIO(); wb1.save(out); out.seek(0)
-                st.success("✅ 合併完成！格式與算式已完美保留。")
+                out = BytesIO(); wb_out.save(out); out.seek(0)
+                st.success("✅ 合併完成！未評分的組長已精準排除，不再拉低平均。")
                 st.download_button("📥 下載結果", out, "KPI_合併結果.xlsx")
             except Exception as e:
-                st.error(f"合併時發生錯誤，請確認上傳的檔案無誤。詳細錯誤：{e}")
+                st.error(f"合併時發生錯誤，詳細錯誤：{e}")
 
 # ---------------------------------------------------------
 # 模式 B：線上直接填表評分
@@ -94,19 +112,16 @@ else:
             wb_temp = openpyxl.load_workbook(template, data_only=True)
             ws_temp = wb_temp.active
             
-            # 1. 抓取員工清單
             employees = {}
             for c in range(START_EMP_COL, ws_temp.max_column + 1):
                 name = ws_temp.cell(row=NAME_ROW, column=c).value
                 if name: employees[str(name).strip()] = c
             
-            # 2. 抓取項目、佔比
             item_info = {}
             for r in ROWS_1_TO_4 + ROWS_5_TO_6:
                 cat = str(ws_temp.cell(row=r, column=1).value or "").strip()
                 desc = str(ws_temp.cell(row=r, column=2).value or "").strip()
                 weight_raw = ws_temp.cell(row=r, column=WEIGHT_COL).value
-                
                 label_text = f"{cat} {desc}".strip() if cat else desc
                 item_info[r] = {
                     "label": label_text if label_text else f"未命名項目 (第 {r} 列)", 
@@ -127,7 +142,6 @@ else:
                     st.info("💡 **貼心提示：** 請直接輸入百分比數字。例如想給 8.5% 分，請直接在格子輸入 **8.5** 即可。")
                     
                     with st.form(f"form_{l_name}_{e_name}"):
-                        # 讀取該名員工是否已有暫存成績
                         curr_scores = st.session_state.all_scores.get(l_name, {}).get(e_name, {})
                         new_data = {}
                         
@@ -136,12 +150,8 @@ else:
                             info = item_info.get(r, {"label": f"項目載入失敗 (第 {r} 列)", "weight_str": "0%"})
                             st.write(f"📌 {info['label']}")
                             st.markdown(f"<p style='color:#007BFF; margin-bottom:5px;'>🎯 分數佔比上限：<b>{info['weight_str']}</b></p>", unsafe_allow_html=True)
-                            
                             display_val = float(curr_scores.get(r, 0.0)) * 100 
-                            
-                            # 【修正重點】：在 key 裡面加入 e_name (員工名字)，確保切換人員時格子會刷新
                             input_pct = st.number_input("輸入評分 (%)", value=display_val, format="%.2f", step=0.5, key=f"score_{r}_{e_name}")
-                            
                             new_data[r] = input_pct / 100.0
                         
                         st.subheader("5-6 項加減分 (將採累計計算)")
@@ -149,16 +159,11 @@ else:
                             info = item_info.get(r, {"label": f"項目載入失敗 (第 {r} 列)", "weight_str": "0%"})
                             st.write(f"📌 {info['label']}")
                             st.markdown(f"<p style='color:#DC3545; margin-bottom:5px;'>🎯 加減分標準：<b>{info['weight_str']}</b></p>", unsafe_allow_html=True)
-                            
                             display_val = float(curr_scores.get(r, 0.0)) * 100
-                            
-                            # 【修正重點】：在 key 裡面加入 e_name (員工名字)
                             input_pct = st.number_input("輸入分數 (%)", value=display_val, format="%.2f", step=0.5, key=f"score_{r}_{e_name}")
-                            
                             new_data[r] = input_pct / 100.0
                             
                         st.subheader("加扣分事蹟說明")
-                        # 【修正重點】：文字框也要加入員工名字的 key
                         new_data[ROW_TEXT] = st.text_area("請詳細填寫事蹟內容", value=curr_scores.get(ROW_TEXT, ""), height=100, key=f"txt_{e_name}")
                         
                         if st.form_submit_button("💾 儲存這份評分"):
@@ -180,25 +185,43 @@ else:
                         
                         for emp_name, col_idx in employees.items():
                             active_leaders = []
+                            # 【嚴格判定】：只抓取 1~6 項分數加總 > 0.0001 的組長
                             for l in st.session_state.all_scores:
                                 if emp_name in st.session_state.all_scores[l]:
                                     d = st.session_state.all_scores[l][emp_name]
-                                    if sum(abs(d.get(r, 0)) for r in ROWS_1_TO_4 + ROWS_5_TO_6) > 0:
+                                    total_numeric_score = sum(abs(float(d.get(r, 0.0))) for r in ROWS_1_TO_4 + ROWS_5_TO_6)
+                                    if total_numeric_score > 1e-4:
                                         active_leaders.append(l)
                             
                             num = len(active_leaders)
-                            if num > 0:
-                                for r in ROWS_1_TO_4:
-                                    total = sum(st.session_state.all_scores[l][emp_name].get(r, 0) for l in active_leaders)
+                            
+                            # 1~4項 平均
+                            for r in ROWS_1_TO_4:
+                                if num > 0:
+                                    total = sum(float(st.session_state.all_scores[l][emp_name].get(r, 0.0)) for l in active_leaders)
                                     ws_out.cell(row=r, column=col_idx).value = total / num
-                                for r in ROWS_5_TO_6:
-                                    total = sum(st.session_state.all_scores[l][emp_name].get(r, 0) for l in active_leaders)
+                                else:
+                                    ws_out.cell(row=r, column=col_idx).value = 0.0
+                                    
+                            # 5~6項 累加
+                            for r in ROWS_5_TO_6:
+                                if num > 0:
+                                    total = sum(float(st.session_state.all_scores[l][emp_name].get(r, 0.0)) for l in active_leaders)
                                     ws_out.cell(row=r, column=col_idx).value = total
-                                txts = [f"【{l}】:\n{st.session_state.all_scores[l][emp_name].get(ROW_TEXT, '')}" for l in active_leaders]
+                                else:
+                                    ws_out.cell(row=r, column=col_idx).value = 0.0
+                                    
+                            # 【分離處理】：文字合併不受上述分數限制，即使沒打分只要有寫字都會抓進來
+                            txts = []
+                            for l in st.session_state.all_scores:
+                                if emp_name in st.session_state.all_scores[l]:
+                                    t = str(st.session_state.all_scores[l][emp_name].get(ROW_TEXT, "")).strip()
+                                    if t: txts.append(f"【{l}】:\n{t}")
+                            if txts:
                                 ws_out.cell(row=ROW_TEXT, column=col_idx).value = "\n\n".join(txts)
                         
                         final_out = BytesIO(); wb_out.save(final_out); final_out.seek(0)
-                        st.success("🎉 全員成績結算完畢！原格式與總計公式已保留。")
+                        st.success("🎉 全員成績結算完畢！未評分者已精確排除。")
                         st.download_button("📥 下載最終 KPI 報表 Excel 檔", final_out, "KPI_最終網頁彙整結果.xlsx", use_container_width=True)
         except Exception as e:
             st.error(f"讀取範本時發生錯誤。錯誤資訊：{e}")
